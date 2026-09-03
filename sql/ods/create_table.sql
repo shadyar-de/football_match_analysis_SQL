@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS ods_match_events (
     id INTEGER PRIMARY KEY,
-    --using INTEGER because the mapping specifically requires
-    -- id INTEGER generated using ROW_NUMBER() after sorting and adding foul rows.
+
     match_id VARCHAR(50) NOT NULL,
     competition_id VARCHAR(50),
     season_id VARCHAR(50),
@@ -54,7 +53,7 @@ CREATE TABLE IF NOT EXISTS ods_match_events (
 
 -- STORY 3.1 — IMPLEMENT PASS-BASED VISUALS  --
 
-CREATE OR REPLACE VIEW vw_pass_network AS
+CREATE OR REPLACE VIEW vw_pass_network AS -- counts how many times a player passes to another player
 SELECT
     team_name,
     player_name AS passer,
@@ -70,7 +69,7 @@ GROUP BY
     pass_recipient_name;
 
 
--- Progressive Passes
+-- counts how many progressive passes each team made.
 
 CREATE OR REPLACE VIEW vw_progressive_passes AS
 SELECT
@@ -82,7 +81,7 @@ WHERE type_name = 'Pass'
 GROUP BY team_name;
 
 
--- Final Third Entries
+-- count how many passes each team made that entered the final third of the pitch.
 
 CREATE OR REPLACE VIEW vw_final_third_entries AS
 SELECT
@@ -94,7 +93,7 @@ WHERE type_name = 'Pass'
 GROUP BY team_name;
 
 
--- Passes per Minute
+-- count how many Passes per Minute of each team.
 
 CREATE OR REPLACE VIEW vw_passes_per_minute AS
 SELECT
@@ -112,7 +111,7 @@ ORDER BY
     minute;
 
 
--- Pass Accuracy
+-- count and calculate each teams pass accuracy percentage.
 
 CREATE OR REPLACE VIEW vw_pass_accuracy AS
 SELECT
@@ -132,7 +131,7 @@ WHERE type_name = 'Pass'
 GROUP BY team_name;
 
 
--- Crosses
+-- count how many crosses each team made.
 
 CREATE OR REPLACE VIEW vw_crosses AS
 SELECT
@@ -144,7 +143,7 @@ WHERE type_name = 'Pass'
 GROUP BY team_name;
 
 
--- Corner Kicks
+-- Count how many Corner Kicks
 
 CREATE OR REPLACE VIEW vw_corner_kicks AS
 SELECT
