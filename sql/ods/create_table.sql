@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS ods_match_events (
     id INTEGER PRIMARY KEY,
-
+    --using INTEGER because the mapping specifically requires id INTEGER,
+    -- generated using ROW_NUMBER() after sorting and adding foul rows.
     match_id VARCHAR(50) NOT NULL,
     competition_id VARCHAR(50),
     season_id VARCHAR(50),
