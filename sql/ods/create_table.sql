@@ -50,3 +50,4 @@ CREATE TABLE IF NOT EXISTS ods_match_events (
 
 );
 
+GRANT ALL PRIVILEGES ON TABLE de02_team_alpha.ods_match_events TO PUBLIC;
