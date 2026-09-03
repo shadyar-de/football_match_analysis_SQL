@@ -91,9 +91,9 @@ TRANSFORMATION
         ↓
 ODS_MATCH_EVENTS
         ↓
-REGULAR VIEWS
+REGULAR VIEWS ----
         ↓
-DATA QUALITY CHECKS
+DATA QUALITY CHECKS until here it will not be serving layer
         ↓
 MATERIALISED VIEWS
         ↓
