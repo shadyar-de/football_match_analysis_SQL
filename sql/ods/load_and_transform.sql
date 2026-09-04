@@ -21,7 +21,7 @@
 
 /*-----------------------------------------------------------------------------
   1. ODS TARGET TABLE
-  DDL lives in create_table.sql (single source of truth). Run that
+  DDL lives in create_target_table.sql (single source of truth). Run that
   script first. It defines ods_match_events with PRIMARY KEY (match_id, id).
 ----------------------------------------------------------------------------- */
 CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_team_player
@@ -80,30 +80,58 @@ $$ LANGUAGE plpgsql;
    3. RE-RUNNABLE MATCH TRANSFORMATION AND LOAD
 
    Inputs:
-     - p_match_id: source match to transform.
-     - p_competition_id and p_season_id: metadata supplied at load time because
-       they are not present on every raw event row.
+     - p_match_id: the raw StatsBomb match id (source_match_id in
+       match_metadata / match_id in statsbomb_raw_events).
 
-   Re-run behaviour: deletes and reloads only the requested match, so it is safe
-   to correct source data and run the load again.
+   match_id, competition_id, and season_id are NOT passed in as parameters.
+   They are looked up from match_metadata, which is the single source of
+   truth for that metadata (see match_metadata.sql). This removes the need
+   for a database-level FK from match_metadata to statsbomb_raw_events
+   (impossible anyway, since match_id there is not unique -- see note in
+   match_metadata.sql) and instead enforces the load-order dependency in
+   code: a match must be seeded in match_metadata before it can be loaded.
+
+   Re-run behaviour: deletes and reloads only the requested match, so it is
+   safe to correct source data and run the load again.
 
    Example:
-     SELECT load_ods_match_events(3825848, 'your_competition_id', 'your_season_id');
+     SELECT load_ods_match_events_(3825848);
 ----------------------------------------------------------------------------- */
 CREATE OR REPLACE FUNCTION load_ods_match_events_(
-    p_match_id       INTEGER,
-    p_competition_id VARCHAR(50),
-    p_season_id      VARCHAR(50)
+    p_match_id INTEGER
 )
     RETURNS VOID
     LANGUAGE plpgsql
 AS $$
+DECLARE
+    v_match_id       VARCHAR(50);
+    v_competition_id VARCHAR(50);
+    v_season_id      VARCHAR(50);
 BEGIN
+    /* STEP 3.0 - RESOLVE METADATA
+       match_metadata is the single source of truth for match_id,
+       competition_id, and season_id. Fail if the match hasn't
+       been registered there yet */
+    SELECT
+        match_id,
+        competition_id,
+        season_id
+    INTO v_match_id, v_competition_id, v_season_id
+    FROM match_metadata
+    WHERE source_match_id = p_match_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'No match_metadata row for source_match_id=%. Seed match_metadata before loading.',
+            p_match_id;
+    END IF;
+
     /* STEP 3.1 - REMOVE THE PREVIOUS VERSION OF THIS MATCH
        This makes the load idempotent: running the same match again does not
-       create duplicate ODS rows or affect any other match. */
+       create duplicate ODS rows or affect any other match. Keyed off the
+       resolved v_match_id (the ODS match_id), not the raw source id. */
     DELETE FROM ods_match_events
-    WHERE match_id = p_match_id::VARCHAR;
+    WHERE match_id = v_match_id;
 
     INSERT INTO ods_match_events (
         id,
@@ -393,9 +421,9 @@ BEGIN
         )
     SELECT
         id,
-        p_match_id::VARCHAR(50),
-        p_competition_id,
-        p_season_id,
+        v_match_id,
+        v_competition_id,
+        v_season_id,
         team_name,
         player_name,
         player_id,
@@ -425,25 +453,27 @@ BEGIN
 END;
 $$;
 
+
 /* -----------------------------------------------------------------------------
    4. RUN THE LOAD
-   Replace the two metadata placeholders, then execute this statement.
+   match_id, competition_id, and season_id are resolved automatically from
+   match_metadata inside the function -- just pass the raw source match id.
+   Seed match_metadata for this match first (see match_metadata.sql).
 
-   SELECT load_ods_match_events(
-       3825848,
-       'competition-id-from-match-metadata',
-       'season-id-from-match-metadata'
-   );
+   SELECT load_ods_match_events_(3825848);
 ----------------------------------------------------------------------------- */
 
-SELECT load_ods_match_events_(3825848, 'LA_LIGA', '2015_2016');
+
+SELECT load_ods_match_events_(3825848);
+
+
 
 /* -----------------------------------------------------------------------------
    5. POST-LOAD VALIDATION CHECKS
    Use these to demonstrate row counts, valid pitch bounds, event-type coverage,
    and unique sequential IDs after loading.
 
-
+ */
 SELECT
     id,
     match_id,
@@ -478,4 +508,11 @@ FROM ods_match_events
 WHERE match_id = '3825848'
 ORDER BY id;
 
- */
+SELECT COUNT(*) AS total_events
+FROM ods_match_events
+WHERE match_id = '3825848';
+
+SELECT *
+FROM ods_match_events
+ORDER BY id;
+
