@@ -168,39 +168,23 @@ GROUP BY
     pass_recipient_name
 HAVING COUNT(*) > 3;
 
-SELECT * FROM report_pass_network;
+-- Visual #11: Progressive Passes && Visual #14: Final Third Entries
+-- (both use REUSABILITY VIEW 1)
 
-
--- Visual #11: Progressive Passes (uses REUSABILITY VIEW 1)
-CREATE OR REPLACE VIEW report_progressive_passes AS
+CREATE VIEW report_advancing_passes AS
 SELECT
     match_id,
     team_name,
     player_name,
-    type_name,
     x,
     y,
     end_x,
     end_y,
-    (end_x - x) AS distance_gained
+    is_progressive,
+    is_final_third_entry
 FROM int_successful_passes
-WHERE
-    is_progressive IS TRUE;
+WHERE is_progressive OR is_final_third_entry;
 
-
--- Visual #14: Final Third Entries (uses REUSABILITY VIEW 1)
-CREATE OR REPLACE VIEW report_final_third_entries AS
-SELECT
-    match_id,
-    team_name,
-    type_name,
-    player_name,
-    x,
-    y,
-    end_x,
-    end_y
-FROM int_successful_passes
-WHERE is_final_third_entry = TRUE;
 
 -- Visual #8: Crosses
 CREATE OR REPLACE VIEW report_crosses AS
