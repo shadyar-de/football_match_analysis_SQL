@@ -46,7 +46,7 @@ WHERE type_name IN ('Tackle', 'Interception', 'Clearance');
 -- =========================================================================
 
 -- Visual #1: Title Page
-CREATE OR REPLACE VIEW report_title_page_v AS
+CREATE OR REPLACE VIEW report_title_page AS
 SELECT
     match_id,
     string_agg(DISTINCT team_name, ' vs ') AS match_fixture,
@@ -55,10 +55,8 @@ SELECT
 FROM ods_match_events
 GROUP BY match_id, competition_id, season_id;
 
-SELECT * FROM report_title_page_v;
-
 -- =========================================================================
--- GROUP 1B: PLAYER POSITIONING
+-- GROUP 2: PLAYER POSITIONING
 -- =========================================================================
 
 -- Visual #2: Average Locations
@@ -75,14 +73,12 @@ FROM ods_match_events
 WHERE player_name IS NOT NULL
 GROUP BY match_id, team_name, player_name;
 
-SELECT * FROM report_average_locations;
-
 -- =========================================================================
--- GROUP 2: DEFENSIVE & RECOVERY ACTIONS
+-- GROUP 3: DEFENSIVE & RECOVERY ACTIONS
 -- =========================================================================
 
 -- Visual #6: Ball Recoveries
-CREATE OR REPLACE VIEW report_ball_recoveries_v AS
+CREATE OR REPLACE VIEW report_ball_recoveries AS
 SELECT
     match_id,
     team_name,
@@ -94,11 +90,6 @@ SELECT
     minute
 FROM ods_match_events
 WHERE type_name = 'Ball Recovery';
-
-SELECT viewowner
-FROM pg_views
-WHERE viewname = 'pass_network';
-
 
 -- Visual #10: Defensive Actions Map (uses REUSABILITY VIEW 3)
 CREATE OR REPLACE VIEW report_defensive_actions AS
@@ -127,7 +118,7 @@ WHERE type_name = 'Foul Committed';
 
 
 -- =========================================================================
--- GROUP 3: PASSING ANALYSIS
+-- GROUP 4: PASSING ANALYSIS
 -- =========================================================================
 
 -- Visual #4: Pass Network (uses REUSABILITY VIEW 1)
@@ -171,7 +162,7 @@ HAVING COUNT(*) > 3;
 -- Visual #11: Progressive Passes && Visual #14: Final Third Entries
 -- (both use REUSABILITY VIEW 1)
 
-CREATE VIEW report_advancing_passes AS
+CREATE OR REPLACE VIEW report_advancing_passes AS
 SELECT
     match_id,
     team_name,
@@ -208,6 +199,7 @@ SELECT
     match_id,
     team_name,
     player_name,
+    type_name,
     play_pattern_name,
     x,
     y,
@@ -219,7 +211,7 @@ WHERE type_name = 'Pass' AND play_pattern_name = 'From Corner';
 
 
 -- =========================================================================
--- GROUP 4: ATTACKING & CREATIVE ACTIONS
+-- GROUP 5: ATTACKING & CREATIVE ACTIONS
 -- =========================================================================
 
 -- Visual #3: Shot Map
@@ -239,7 +231,7 @@ FROM ods_match_events
 WHERE type_name = 'Shot';
 
 -- Visual #7: Dribbles
-CREATE OR REPLACE VIEW report_dribbles_v AS
+CREATE OR REPLACE VIEW report_dribbles AS
 SELECT
     match_id,
     team_name,
@@ -255,7 +247,7 @@ WHERE type_name = 'Dribble';
 
 
 -- =========================================================================
--- GROUP 5: POSSESSION & TERRITORY
+-- GROUP 6: POSSESSION & TERRITORY
 -- =========================================================================
 
 -- Visual #5: Losses of Possession
@@ -282,15 +274,15 @@ WITH zone_data AS (
             WHEN g.pitch_third = 'Defensive' THEN 20
             WHEN g.pitch_third = 'Middle'    THEN 60
             ELSE 100
-        END AS x,
+            END AS x,
         CASE
             WHEN g.pitch_side = 'Left' THEN 20 ELSE 60
-        END AS y,
+            END AS y,
         COUNT(e.id) AS event_count
     FROM ods_match_events e
-    JOIN int_pitch_geography g
-        ON e.match_id = g.match_id
-            AND e.id = g.id
+             JOIN int_pitch_geography g
+                  ON e.match_id = g.match_id
+                      AND e.id = g.id
     WHERE e.type_name IN ('Pass', 'Ball Receipt', 'Carry')
     GROUP BY e.match_id, e.team_name, g.pitch_third, g.pitch_side
 )
@@ -317,7 +309,7 @@ GROUP BY match_id, team_name, minute_bin;
 
 
 -- =========================================================================
--- GROUP 6: PERFORMANCE SUMMARY & TIMELINES
+-- GROUP 7: PERFORMANCE SUMMARY & TIMELINES
 -- =========================================================================
 
 -- Visual #17: Pass Accuracy
@@ -354,6 +346,7 @@ CREATE OR REPLACE VIEW report_passes_per_minute AS
 SELECT
     match_id,
     team_name,
+    'Pass'::VARCHAR(50) AS type_name,
     minute,
     total_passes AS pass_count
 FROM report_pass_accuracy_timeline;
