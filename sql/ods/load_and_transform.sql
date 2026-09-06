@@ -277,6 +277,7 @@ BEGIN
                     WHEN c.source_type = 'SHOT' THEN 'Shot'
                     WHEN c.source_type = 'INTERCEPTION' THEN 'Interception'
                     WHEN c.source_type = 'BALL RECOVERY' THEN 'Ball Recovery'
+                    WHEN c.source_type = 'BALL RECEIPT*' THEN 'Ball Receipt'
                     WHEN (c.source_type = 'TACKLE'
                         OR (c.source_type = 'DUEL' AND c.source_duel_type = 'TACKLE')) THEN 'Tackle'
                     WHEN c.source_type = 'DRIBBLE' THEN 'Dribble'
