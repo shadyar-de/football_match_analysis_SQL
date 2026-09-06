@@ -16,6 +16,7 @@ WHERE type_name = 'Pass'
 -- Centralizes pitch thirds, sides, and the penalty box logic (#13, #14, #15)
 CREATE OR REPLACE VIEW int_pitch_geography AS
 SELECT
+    match_id,
     id,
     x,
     y,
@@ -64,6 +65,7 @@ SELECT * FROM report_title_page_v;
 -- One row per player: average pitch position and total event involvement.
 CREATE OR REPLACE VIEW report_average_locations AS
 SELECT
+    match_id,
     team_name,
     player_name,
     AVG(x) AS avg_x,
@@ -71,7 +73,7 @@ SELECT
     COUNT(id) AS event_count
 FROM ods_match_events
 WHERE player_name IS NOT NULL
-GROUP BY team_name, player_name;
+GROUP BY match_id, team_name, player_name;
 
 SELECT * FROM report_average_locations;
 
@@ -82,6 +84,7 @@ SELECT * FROM report_average_locations;
 -- Visual #6: Ball Recoveries
 CREATE OR REPLACE VIEW report_ball_recoveries_v AS
 SELECT
+    match_id,
     team_name,
     player_name,
     type_name,
@@ -92,9 +95,15 @@ SELECT
 FROM ods_match_events
 WHERE type_name = 'Ball Recovery';
 
+SELECT viewowner
+FROM pg_views
+WHERE viewname = 'pass_network';
+
+
 -- Visual #10: Defensive Actions Map (uses REUSABILITY VIEW 3)
 CREATE OR REPLACE VIEW report_defensive_actions AS
 SELECT
+    match_id,
     team_name,
     player_name,
     type_name,
@@ -106,6 +115,7 @@ FROM int_defensive_actions;
 -- Visual #9: Fouls Committed
 CREATE OR REPLACE VIEW report_fouls_committed AS
 SELECT
+    match_id,
     team_name,
     type_name,
     player_name,
@@ -125,6 +135,7 @@ CREATE OR REPLACE VIEW report_pass_network AS
 
 SELECT
     'position' AS result_type,
+    match_id,
     team_name,
     player_name,
     NULL AS pass_recipient_name,
@@ -133,6 +144,7 @@ SELECT
     COUNT(*) AS pass_count
 FROM int_successful_passes
 GROUP BY
+    match_id,
     team_name,
     player_name
 
@@ -140,6 +152,7 @@ UNION ALL
 
 SELECT
     'connection' AS result_type,
+    match_id,
     team_name,
     player_name,
     pass_recipient_name,
@@ -149,6 +162,7 @@ SELECT
 FROM int_successful_passes
 WHERE pass_recipient_name IS NOT NULL
 GROUP BY
+    match_id,
     team_name,
     player_name,
     pass_recipient_name
@@ -160,6 +174,7 @@ SELECT * FROM report_pass_network;
 -- Visual #11: Progressive Passes (uses REUSABILITY VIEW 1)
 CREATE OR REPLACE VIEW report_progressive_passes AS
 SELECT
+    match_id,
     team_name,
     player_name,
     type_name,
@@ -176,6 +191,7 @@ WHERE
 -- Visual #14: Final Third Entries (uses REUSABILITY VIEW 1)
 CREATE OR REPLACE VIEW report_final_third_entries AS
 SELECT
+    match_id,
     team_name,
     type_name,
     player_name,
@@ -186,21 +202,26 @@ SELECT
 FROM int_successful_passes
 WHERE is_final_third_entry = TRUE;
 
--- Visual #8: Crosses (Includes failed attempts)
+-- Visual #8: Crosses
 CREATE OR REPLACE VIEW report_crosses AS
 SELECT
+    match_id,
     team_name,
     player_name,
+    pass_cross,
+    outcome_name,
     x,
     y,
     end_x,
     end_y
-FROM int_successful_passes
-WHERE pass_cross = TRUE;
+FROM ods_match_events
+WHERE type_name = 'Pass'
+  AND pass_cross = TRUE;
 
 -- Visual #12: Corner Kicks
 CREATE OR REPLACE VIEW report_corner_kicks AS
 SELECT
+    match_id,
     team_name,
     player_name,
     play_pattern_name,
@@ -220,8 +241,10 @@ WHERE type_name = 'Pass' AND play_pattern_name = 'From Corner';
 -- Visual #3: Shot Map
 CREATE OR REPLACE VIEW report_shot_map AS
 SELECT
+    match_id,
     team_name,
     player_name,
+    type_name,
     x,
     y,
     end_x,
@@ -234,6 +257,7 @@ WHERE type_name = 'Shot';
 -- Visual #7: Dribbles
 CREATE OR REPLACE VIEW report_dribbles_v AS
 SELECT
+    match_id,
     team_name,
     type_name,
     player_name,
@@ -253,8 +277,10 @@ WHERE type_name = 'Dribble';
 -- Visual #5: Losses of Possession
 CREATE OR REPLACE VIEW report_possession_losses AS
 SELECT
+    match_id,
     team_name,
     type_name,
+    outcome_name,
     x,
     y
 FROM ods_match_events
@@ -266,39 +292,44 @@ WHERE type_name IN ('Dispossessed', 'Miscontrol')
 CREATE OR REPLACE VIEW report_possession_zones AS
 WITH zone_data AS (
     SELECT
+        e.match_id,
         e.team_name,
         CASE
             WHEN g.pitch_third = 'Defensive' THEN 20
             WHEN g.pitch_third = 'Middle'    THEN 60
             ELSE 100
-            END AS x,
+        END AS x,
         CASE
             WHEN g.pitch_side = 'Left' THEN 20 ELSE 60
-            END AS y,
+        END AS y,
         COUNT(e.id) AS event_count
     FROM ods_match_events e
-             JOIN int_pitch_geography g ON e.id = g.id
+    JOIN int_pitch_geography g
+        ON e.match_id = g.match_id
+            AND e.id = g.id
     WHERE e.type_name IN ('Pass', 'Ball Receipt', 'Carry')
-    GROUP BY 1, 2, 3
+    GROUP BY e.match_id, e.team_name, g.pitch_third, g.pitch_side
 )
 SELECT
+    match_id,
     team_name,
     x,
     y,
     event_count,
-    ROUND(100.0 * event_count / SUM(event_count) OVER (PARTITION BY team_name), 2) AS pct_of_total_possession
+    ROUND(100.0 * event_count / SUM(event_count) OVER (PARTITION BY match_id, team_name), 2) AS pct_of_total_possession
 FROM zone_data;
 
 
 -- Visual #15: Territory Chart (5-Minute Bins)
 CREATE OR REPLACE VIEW report_territory_chart AS
 SELECT
+    match_id,
     team_name,
     ((minute - 1) / 5) * 5 AS minute_bin,
     AVG(x) AS avg_x_position
 FROM ods_match_events
 WHERE x IS NOT NULL
-GROUP BY team_name, minute_bin;
+GROUP BY match_id, team_name, minute_bin;
 
 
 -- =========================================================================
@@ -309,22 +340,24 @@ GROUP BY team_name, minute_bin;
 CREATE OR REPLACE VIEW report_pass_accuracy_timeline AS
 WITH minute_stats AS (
     SELECT
+        match_id,
         team_name,
         minute,
         COUNT(*) AS passes_in_minute,
         COUNT(*) FILTER (WHERE outcome_name IS NULL) AS success_in_minute
     FROM ods_match_events
     WHERE type_name = 'Pass'
-    GROUP BY team_name, minute
+    GROUP BY match_id, team_name, minute
 )
 SELECT
+    match_id,
     team_name,
     minute,
     passes_in_minute AS total_passes,
     ROUND(
             100.0 *
-            SUM(success_in_minute) OVER (PARTITION BY team_name ORDER BY minute) /
-            SUM(passes_in_minute) OVER (PARTITION BY team_name ORDER BY minute),
+            SUM(success_in_minute) OVER (PARTITION BY match_id, team_name ORDER BY minute) /
+            SUM(passes_in_minute) OVER (PARTITION BY match_id, team_name ORDER BY minute),
             2
     ) AS cumulative_accuracy
 FROM minute_stats;
@@ -335,22 +368,33 @@ FROM minute_stats;
 -- rather than re-scanning ods_match_events a second time for the same count.
 CREATE OR REPLACE VIEW report_passes_per_minute AS
 SELECT
+    match_id,
     team_name,
     minute,
     total_passes AS pass_count
 FROM report_pass_accuracy_timeline;
 
 
--- Visual #18: Match Statistics (uses REUSABILITY VIEW 3)
+-- Visual #18: Match Statistics
 CREATE OR REPLACE VIEW report_match_statistics AS
 SELECT
+    match_id,
     team_name,
-    COUNT(*) FILTER (WHERE type_name = 'Pass') AS total_passes,
-    COUNT(*) FILTER (WHERE type_name = 'Pass' AND outcome_name IS NULL) AS accurate_passes,
-    COUNT(*) FILTER (WHERE type_name = 'Shot') AS total_shots,
-    COUNT(*) FILTER (WHERE type_name = 'Shot' AND outcome_name = 'Goal') AS goals,
-
-    COUNT(*) FILTER (WHERE type_name = 'Tackle') AS total_tackles,
-    COUNT(*) FILTER (WHERE type_name = 'Interception') AS interceptions
+    COUNT(*) FILTER (WHERE type_name = 'Pass')                                      AS total_passes,
+    COUNT(*) FILTER (WHERE type_name = 'Pass' AND outcome_name IS NULL)             AS accurate_passes,
+    ROUND(
+            100.0 * COUNT(*) FILTER (WHERE type_name = 'Pass' AND outcome_name IS NULL)
+                / NULLIF(COUNT(*) FILTER (WHERE type_name = 'Pass'), 0),
+            2
+    )                                                                               AS pass_accuracy_pct,
+    COUNT(*) FILTER (WHERE type_name = 'Shot')                                      AS total_shots,
+    COUNT(*) FILTER (WHERE type_name = 'Shot' AND outcome_name = 'Goal')            AS goals,
+    COUNT(*) FILTER (WHERE type_name = 'Shot' AND outcome_name IN ('Goal', 'Saved')) AS shots_on_target,
+    COUNT(*) FILTER (WHERE type_name = 'Pass' AND play_pattern_name = 'From Corner') AS corners,
+    COUNT(*) FILTER (WHERE type_name = 'Foul Committed')                            AS fouls_committed,
+    COUNT(*) FILTER (WHERE type_name = 'Ball Recovery')                            AS ball_recoveries,
+    COUNT(*) FILTER (WHERE type_name = 'Tackle')                                   AS total_tackles,
+    COUNT(*) FILTER (WHERE type_name = 'Interception')                            AS interceptions,
+    COUNT(*) FILTER (WHERE type_name = 'Clearance')                               AS clearances
 FROM ods_match_events
-GROUP BY team_name;
+GROUP BY match_id, team_name;
