@@ -60,7 +60,24 @@ BEGIN
         WHERE e.match_id = p_match_id
           AND e.type = 'Starting XI'
         LOOP
-            v_lineup_json := REPLACE(r_row.tactics, '''', '"')::json -> 'lineup';
+            /* Handling a malformed tactics string. Basically, catch the cast, warn, and move on to
+               the next team */
+            BEGIN
+                v_lineup_json := REPLACE(r_row.tactics, '''', '"')::json -> 'lineup';
+            EXCEPTION WHEN invalid_text_representation THEN
+                RAISE WARNING
+                    'get_match_starters: match_id=%, team=%: malformed tactics JSON, skipping lineup for this team',
+                    p_match_id, r_row.team;
+                CONTINUE;
+            END;
+
+            /* NULL tactics (no Starting XI JSON at all)*/
+            IF v_lineup_json IS NULL THEN
+                RAISE WARNING
+                    'get_match_starters: match_id=%, team=%: no tactics/lineup JSON present, jersey numbers unavailable for this team',
+                    p_match_id, r_row.team;
+                CONTINUE;
+            END IF;
 
             FOR v_player_item IN SELECT json_array_elements(v_lineup_json)
                 LOOP
