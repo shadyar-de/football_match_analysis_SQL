@@ -16,7 +16,7 @@ player, with no SQL rewriting required.
 
 ## Pipeline at a Glance
 
-```
+```text
 statsbomb_raw_events (raw StatsBomb event dump, one match's worth of rows)
         │
         ▼
@@ -30,14 +30,14 @@ load_ods_match_events(id)  -- transformation function: parses coordinates,
         │                      derives fallback fouls, assigns sequential id
         ▼
 ods_match_events           -- single source of truth, one row per event,
-        │                      indexed on (match_id, team_name, player_name)
+        │                      indexed on (match_id, team_name, player_id)
         │                      and (match_id, type_name)
         ▼
 Reporting layer (views, sql/ods/visuals.sql)
         │
         ▼
 18 analyst-facing report_* visuals -- filter by match_id / team_name /
-                                     player_name, no SQL changes needed
+                                     player_id, no SQL changes needed
 ```
 
 ## Running the Pipeline
@@ -81,15 +81,18 @@ Key transformations (full column-by-column mapping is in the project's
 - **Event taxonomy** -- `type_name` / `sub_type_name` / `outcome_name` are
   derived from the source `type` + subtype columns (`pass_type`,
   `shot_type`, `duel_type`, ...) into one consistent StatsBomb-style label
-  per event. `outcome_name IS NULL` on a `Pass` is the convention used
-  throughout the reporting layer for "successful pass" -- no separate flag.
+  per event. Inconsistent string values (e.g., `Ball Receipt*`) are mapped
+  to standard values (`Ball Receipt`). `outcome_name IS NULL` on a `Pass` is
+  the convention used throughout the reporting layer for "successful pass" --
+  no separate flag.
 - **Player identity** -- `player_id` and `jersey_number` are resolved by
   joining the match's `Starting XI` tactics payload (parsed in
-  `get_match_starters()`) onto events by `player_name`.
+  `get_match_starters()`) onto events.
 - **Derived football flags** -- `zone_third`, `is_progressive` (advanced ≥10
   yards and ended past the halfway line), and `is_final_third_entry`
   (started at/behind x=80, ended beyond it) are computed once here so every
-  downstream view reads a flag instead of re-deriving it.
+  downstream view reads a flag instead of re-deriving it. Logic is centralized
+  to avoid duplication.
 - **Timing** -- StatsBomb timestamps reset every period; `duration` is
   normalised to total match seconds, then `minute`/`second`/`timestamp` are
   derived from that.
@@ -108,6 +111,10 @@ Key transformations (full column-by-column mapping is in the project's
   extracted once per match by `get_match_starters()` into a lookup table of
   `(team_name, player_name) -> (player_id, jersey_number)`, which is then
   left-joined onto every event by player name.
+
+### Data Quality & Validation
+- **Error Handling:** The load function catches and handles malformed or missing JSON in the `Starting XI` tactics payload without crashing the pipeline.
+- **Validation:** Post-load validation checks evaluate the dataset. Warnings are raised for unmapped event types, ensuring new or unexpected raw data is flagged rather than silently passing to the reporting layer.
 
 ## The Reporting Layer
 
@@ -143,13 +150,13 @@ table).
 
 ### Why views (and not materialised views) right now
 
-Because the table has indexes on (match_id, team_name, player_name) and (match_id, type_name), and every reporting view filters on match_id, each query only scans a few thousand indexed rows for that match — not the whole table. That's already fast, so a live view gives you up-to-date results at essentially no extra cost. A materialized view would only pay off once queries got expensive enough to need pre-computed results, and right now it would just add a refresh step and risk serving stale data while the underlying transformation logic is still being refined.
+Because the table has indexes on `(match_id, team_name, player_id)` and `(match_id, type_name)`, and every reporting view filters on `match_id`, each query only scans a few thousand indexed rows for that match — not the whole table. That's already fast, so a live view gives you up-to-date results at essentially no extra cost. A materialized view would only pay off once queries got expensive enough to need pre-computed results, and right now it would just add a refresh step and risk serving stale data while the underlying transformation logic is still being refined.
 
 
 ## Filterability
 
 Every `report_*` view can be filtered by `match_id`, `team_name`, and
-`player_name` (where the visual has a player grain) with a plain `WHERE` --
+`player_id` (where the visual has a player grain) with a plain `WHERE` --
 no view edits, no rewritten SQL:
 
 ```sql
@@ -161,12 +168,11 @@ SELECT * FROM report_shot_map WHERE match_id = '3825848' AND team_name = 'Levant
 
 -- One match, one player
 SELECT * FROM report_average_locations
-WHERE match_id = '3825848' AND player_name = 'Roger Martí';
+WHERE match_id = '3825848' AND player_id = '6739';
 
--- One match, whole pass network (what a dashboard would parameterize)
+-- One match, whole pass network
 SELECT * FROM report_pass_network WHERE match_id = '3825848';
 ```
-
 
 ## Next Steps
 
