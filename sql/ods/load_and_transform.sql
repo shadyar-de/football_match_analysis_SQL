@@ -108,6 +108,7 @@ DECLARE
     v_match_id       VARCHAR(50);
     v_competition_id VARCHAR(50);
     v_season_id      VARCHAR(50);
+    v_has_unmapped_types BOOLEAN;
 BEGIN
     /* STEP 3.0 - RESOLVE METADATA
        match_metadata is the single source of truth for match_id,
@@ -452,6 +453,34 @@ BEGIN
         second,
         LPAD(minute::TEXT, 2, '0') || ':' || LPAD(second::TEXT, 2, '0')
     FROM ordered_events;
+
+    /* STEP 3.10 - FLAG UNMAPPED EVENT TYPES
+       The type_name CASE in STEP 3.5 falls through to the raw StatsBomb
+       label for any source type this pipeline doesn't recognise yet. That
+       keeps the load from breaking, but it also means a brand-new event
+       type (e.g. next season) silently stops appearing in every reporting
+       view that filters on a specific type_name. */
+    SELECT EXISTS (
+        SELECT 1
+        FROM ods_match_events
+        WHERE match_id = v_match_id
+          AND type_name NOT IN (
+                                'Pass', 'Shot', 'Interception', 'Ball Recovery', 'Ball Receipt',
+                                'Tackle', 'Dribble', 'Miscontrol', 'Dispossessed', 'Clearance',
+                                'Ball Out', 'Foul Committed', 'Ball Lost'
+            )
+    ) INTO v_has_unmapped_types;
+
+    IF v_has_unmapped_types THEN
+        RAISE WARNING
+            'load_ods_match_events: match_id=% has one or more unmapped event types -- check the type_name CASE in STEP 3.5 for new StatsBomb types.',
+            v_match_id;
+    END IF;
+    IF FOUND THEN
+        RAISE WARNING
+            'load_ods_match_events: match_id=% has one or more unmapped event types -- check the type_name CASE in STEP 3.5 for new StatsBomb types.',
+            v_match_id;
+    END IF;
 END;
 $$;
 
