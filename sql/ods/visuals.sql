@@ -248,8 +248,7 @@ SELECT
     x,
     y,
     end_x,
-    end_y,
-    outcome_name
+    end_y
 FROM ods_match_events
 WHERE type_name = 'Dribble';
 
