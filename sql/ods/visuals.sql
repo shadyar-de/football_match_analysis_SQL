@@ -14,8 +14,6 @@ WHERE type_name = 'Pass'
 
 -- REUSABILITY VIEW 2
 -- Centralizes pitch sides and the penalty box logic (#13, #14, #15).
--- Pitch third itself is NOT recomputed here: ods_match_events.zone_third
--- already applies the 40/80 split at load time.
 CREATE OR REPLACE VIEW int_pitch_geography AS
 SELECT
     match_id,
@@ -58,18 +56,18 @@ GROUP BY match_id, competition_id, season_id;
 -- =========================================================================
 
 -- Visual #2: Average Locations
--- One row per player: average pitch position and total event involvement.
 CREATE OR REPLACE VIEW report_average_locations AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     AVG(x) AS avg_x,
     AVG(y) AS avg_y,
     COUNT(id) AS event_count
 FROM ods_match_events
-WHERE player_name IS NOT NULL
-GROUP BY match_id, team_name, player_name;
+WHERE player_id IS NOT NULL
+GROUP BY match_id, team_name, player_id, player_name;
 
 -- =========================================================================
 -- GROUP 3: DEFENSIVE & RECOVERY ACTIONS
@@ -80,6 +78,7 @@ CREATE OR REPLACE VIEW report_ball_recoveries AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     type_name,
     x,
@@ -94,6 +93,7 @@ CREATE OR REPLACE VIEW report_defensive_actions AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     type_name,
     x,
@@ -106,8 +106,9 @@ CREATE OR REPLACE VIEW report_fouls_committed AS
 SELECT
     match_id,
     team_name,
-    type_name,
+    player_id,
     player_name,
+    type_name,
     x,
     y,
     card_type
@@ -126,6 +127,7 @@ SELECT
     'position' AS result_type,
     match_id,
     team_name,
+    player_id,
     player_name,
     NULL AS pass_recipient_name,
     AVG(x) AS x,
@@ -135,6 +137,7 @@ FROM int_successful_passes
 GROUP BY
     match_id,
     team_name,
+    player_id,
     player_name
 
 UNION ALL
@@ -143,8 +146,9 @@ SELECT
     'connection' AS result_type,
     match_id,
     team_name,
+    player_id,
     player_name,
-    pass_recipient_name,
+    pass_recipient_name,  -- Using the only available column from your schema
     NULL AS x,
     NULL AS y,
     COUNT(*) AS pass_count
@@ -153,6 +157,7 @@ WHERE pass_recipient_name IS NOT NULL
 GROUP BY
     match_id,
     team_name,
+    player_id,
     player_name,
     pass_recipient_name
 HAVING COUNT(*) > 3;
@@ -164,6 +169,7 @@ CREATE OR REPLACE VIEW report_advancing_passes AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     x,
     y,
@@ -180,6 +186,7 @@ CREATE OR REPLACE VIEW report_crosses AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     pass_cross,
     outcome_name,
@@ -196,6 +203,7 @@ CREATE OR REPLACE VIEW report_corner_kicks AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     type_name,
     play_pattern_name,
@@ -217,6 +225,7 @@ CREATE OR REPLACE VIEW report_shot_map AS
 SELECT
     match_id,
     team_name,
+    player_id,
     player_name,
     type_name,
     x,
@@ -233,8 +242,9 @@ CREATE OR REPLACE VIEW report_dribbles AS
 SELECT
     match_id,
     team_name,
-    type_name,
+    player_id,
     player_name,
+    type_name,
     x,
     y,
     end_x,
