@@ -24,8 +24,8 @@
   DDL lives in create_target_table.sql (single source of truth). Run that
   script first. It defines ods_match_events with PRIMARY KEY (match_id, id).
 ----------------------------------------------------------------------------- */
-CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_team_player
-    ON ods_match_events (match_id, team_name, player_name);
+CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_team_player_id
+    ON ods_match_events (match_id, team_name, player_id);
 
 CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_type
     ON ods_match_events (match_id, type_name);
