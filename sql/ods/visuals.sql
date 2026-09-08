@@ -13,18 +13,16 @@ WHERE type_name = 'Pass'
 
 
 -- REUSABILITY VIEW 2
--- Centralizes pitch thirds, sides, and the penalty box logic (#13, #14, #15)
+-- Centralizes pitch sides and the penalty box logic (#13, #14, #15).
+-- Pitch third itself is NOT recomputed here: ods_match_events.zone_third
+-- already applies the 40/80 split at load time.
 CREATE OR REPLACE VIEW int_pitch_geography AS
 SELECT
     match_id,
     id,
     x,
     y,
-    CASE
-        WHEN x < 40 THEN 'Defensive'
-        WHEN x < 80 THEN 'Middle'
-        ELSE 'Attacking'
-        END AS pitch_third,
+    zone_third AS pitch_third,
     CASE
         WHEN y < 40 THEN 'Left'
         ELSE 'Right'
@@ -271,8 +269,8 @@ WITH zone_data AS (
         e.match_id,
         e.team_name,
         CASE
-            WHEN g.pitch_third = 'Defensive' THEN 20
-            WHEN g.pitch_third = 'Middle'    THEN 60
+            WHEN g.pitch_third = 'Defensive third' THEN 20
+            WHEN g.pitch_third = 'Middle third'    THEN 60
             ELSE 100
             END AS x,
         CASE
