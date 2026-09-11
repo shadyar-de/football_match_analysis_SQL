@@ -8,9 +8,8 @@
 \i schema/ods_match_events.sql
 \i schema/match_metadata.sql
 
--- FUNCTIONS -- dependency order matters:
--- get_match_starters is called by transform_match_events,
--- which is called by load_ods_match_events.
+-- FUNCTIONS
+\i functions/try_parse_lineup_json.sql
 \i functions/get_match_starters.sql
 \i functions/transform_match_events.sql
 \i functions/load_ods_match_events.sql
