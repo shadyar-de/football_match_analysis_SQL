@@ -1,0 +1,342 @@
+/* -----------------------------------------------------------------------------
+   TRANSFORM RAW STATSBOMB EVENTS INTO ODS ROWS FOR ONE MATCH
+
+   Pure computation -- no DELETE, no INSERT, no side effects. Returns the rows
+   load_ods_match_events() will persist. Callable standalone for debugging:
+
+     SELECT * FROM transform_match_events(3825848, '3825848', 'LA_LIGA', '2015_2016');
+
+   Inputs:
+     - p_source_match_id: the raw StatsBomb match id, used to filter
+       statsbomb_raw_events and to call get_match_starters().
+     - p_match_id, p_competition_id, p_season_id: already resolved from
+       match_metadata by the caller (see load_ods_match_events.sql). Not
+       re-resolved here so the "match must be seeded first" check exists in
+       exactly one place.
+----------------------------------------------------------------------------- */
+CREATE OR REPLACE FUNCTION transform_match_events(
+    p_source_match_id INTEGER,
+    p_match_id        VARCHAR(50),
+    p_competition_id  VARCHAR(50),
+    p_season_id       VARCHAR(50)
+)
+    RETURNS TABLE (
+                      id                   INTEGER,
+                      match_id             VARCHAR(50),
+                      competition_id       VARCHAR(50),
+                      season_id            VARCHAR(50),
+                      team_name            VARCHAR(100),
+                      player_name          VARCHAR(100),
+                      player_id            VARCHAR(50),
+                      jersey_number        INTEGER,
+                      pass_recipient_name  VARCHAR(100),
+                      type_name            VARCHAR(50),
+                      sub_type_name        VARCHAR(50),
+                      outcome_name         VARCHAR(50),
+                      pass_cross           BOOLEAN,
+                      play_pattern_name    VARCHAR(50),
+                      card_type            VARCHAR(20),
+                      x                    NUMERIC(5, 1),
+                      y                    NUMERIC(5, 1),
+                      end_x                NUMERIC(5, 1),
+                      end_y                NUMERIC(5, 1),
+                      zone_third           VARCHAR(20),
+                      is_progressive       BOOLEAN,
+                      is_final_third_entry BOOLEAN,
+                      xg                   NUMERIC(5, 4),
+                      period               INTEGER,
+                      frame                INTEGER,
+                      duration             NUMERIC(10, 2),
+                      minute               INTEGER,
+                      second               INTEGER,
+                      "timestamp"            VARCHAR(10)
+                  )
+    LANGUAGE sql
+AS $$
+    /* STEP 1 - READ AND STANDARDISE THE RAW SOURCE FIELDS
+       - Converts literal text 'null' values to SQL NULL.
+       - Bridges the mapping PDF's friendly names to actual StatsBomb columns:
+         pass_type, pass_outcome, shot_outcome, foul_committed_card, etc.
+       - Chooses the correct end-location field based on Pass, Carry, or Shot.
+       - Converts period-relative StatsBomb timestamps into total match seconds. */
+WITH source_events AS (
+    SELECT
+        NULLIF(e."index"::TEXT, 'null')::INTEGER AS source_frame,
+        NULLIF(e.team::TEXT, 'null')::VARCHAR(100) AS team_name,
+        NULLIF(e.player::TEXT, 'null')::VARCHAR(100) AS player_name,
+        NULLIF(e.player_id::TEXT, 'null')::VARCHAR(50) AS raw_player_id,
+        NULLIF(e.pass_recipient::TEXT, 'null')::VARCHAR(100) AS pass_recipient_name,
+        NULLIF(e.type::TEXT, 'null')::VARCHAR(100) AS raw_type,
+        NULLIF(e.pass_type::TEXT, 'null')::VARCHAR(100) AS raw_pass_type,
+        NULLIF(e.duel_type::TEXT, 'null')::VARCHAR(100) AS raw_duel_type,
+        NULLIF(e.shot_type::TEXT, 'null')::VARCHAR(100) AS raw_shot_type,
+        NULLIF(e.pass_outcome::TEXT, 'null')::VARCHAR(100) AS raw_pass_outcome,
+        NULLIF(e.shot_outcome::TEXT, 'null')::VARCHAR(100) AS raw_shot_outcome,
+        COALESCE(NULLIF(NULLIF(LOWER(TRIM(e.pass_cross::TEXT)), ''), 'null')::BOOLEAN, FALSE) AS raw_pass_cross,
+        NULLIF(e.play_pattern::TEXT, 'null')::VARCHAR(100) AS raw_play_pattern,
+        COALESCE(
+                NULLIF(e.foul_committed_card::TEXT, 'null'),
+                NULLIF(e.bad_behaviour_card::TEXT, 'null')
+        )::VARCHAR(100) AS raw_card_type,
+        NULLIF(NULLIF(TRIM(e.location::TEXT), ''), 'null') AS location_raw,
+        CASE
+            WHEN UPPER(TRIM(e.type::TEXT)) = 'PASS'  THEN NULLIF(e.pass_end_location::TEXT, 'null')
+            WHEN UPPER(TRIM(e.type::TEXT)) = 'CARRY' THEN NULLIF(e.carry_end_location::TEXT, 'null')
+            WHEN UPPER(TRIM(e.type::TEXT)) = 'SHOT'  THEN NULLIF(e.shot_end_location::TEXT, 'null')
+            END AS end_location_raw,
+        NULLIF(e.shot_statsbomb_xg::TEXT, 'null')::NUMERIC(5,4) AS xg,
+        NULLIF(e.period::TEXT, 'null')::INTEGER AS period,
+        /* StatsBomb timestamps reset each period; convert to match seconds. */
+        (
+            EXTRACT(EPOCH FROM e.timestamp::TIME)
+                + CASE NULLIF(e.period::TEXT, 'null')::INTEGER
+                      WHEN 1 THEN 0
+                      WHEN 2 THEN 45 * 60
+                      WHEN 3 THEN 90 * 60
+                      WHEN 4 THEN 105 * 60
+                      ELSE 0
+                END
+            )::NUMERIC(10,2) AS duration
+    FROM statsbomb_raw_events AS e
+    WHERE e.match_id = p_source_match_id
+      -- The ODS is a spatial event table.  This removes Starting XI and
+      -- other non-pitch metadata events while retaining all mapped events.
+      AND NULLIF(NULLIF(TRIM(e.location::TEXT), ''), 'null') IS NOT NULL
+),
+    /* STEP 2 - PARSE COORDINATES
+       Converts strings such as '[61.0, 40.1]' into numeric raw_x and raw_y.
+       End coordinates are parsed from pass_end_location, carry_end_location,
+       or shot_end_location selected in the preceding step. */
+     parsed_coordinates AS (
+         SELECT
+             s.*,
+             NULLIF(TRIM(SPLIT_PART(TRIM(BOTH '[]' FROM s.location_raw), ',', 1)), '')::NUMERIC AS raw_x,
+             NULLIF(TRIM(SPLIT_PART(TRIM(BOTH '[]' FROM s.location_raw), ',', 2)), '')::NUMERIC AS raw_y,
+             NULLIF(TRIM(SPLIT_PART(TRIM(BOTH '[]' FROM s.end_location_raw), ',', 1)), '')::NUMERIC AS raw_end_x,
+             NULLIF(TRIM(SPLIT_PART(TRIM(BOTH '[]' FROM s.end_location_raw), ',', 2)), '')::NUMERIC AS raw_end_y
+         FROM source_events AS s
+     ),
+    /* STEP 3 - NORMALISE COORDINATES AND STANDARDISE SOURCE LABELS
+       Keeps the supplied 120 x 80 StatsBomb coordinates unchanged. If a future
+       feed sends a 0-1 range, scales it to the same 120 x 80 pitch. */
+     coordinates AS (
+         SELECT
+             p.*,
+             CASE WHEN p.raw_x BETWEEN 0 AND 1 THEN p.raw_x * 120 ELSE p.raw_x END::NUMERIC(5,1) AS x,
+             CASE WHEN p.raw_y BETWEEN 0 AND 1 THEN p.raw_y * 80  ELSE p.raw_y END::NUMERIC(5,1) AS y,
+             CASE WHEN p.raw_end_x BETWEEN 0 AND 1 THEN p.raw_end_x * 120 ELSE p.raw_end_x END::NUMERIC(5,1) AS end_x,
+             CASE WHEN p.raw_end_y BETWEEN 0 AND 1 THEN p.raw_end_y * 80  ELSE p.raw_end_y END::NUMERIC(5,1) AS end_y,
+             NULLIF(UPPER(TRIM(p.raw_type)), '') AS source_type,
+             NULLIF(UPPER(REPLACE(TRIM(p.raw_pass_type), '-', ' ')), '') AS source_pass_type,
+             NULLIF(UPPER(REPLACE(TRIM(p.raw_duel_type), '-', ' ')), '') AS source_duel_type,
+             NULLIF(UPPER(REPLACE(TRIM(p.raw_shot_type), '-', ' ')), '') AS source_shot_type,
+             NULLIF(UPPER(TRIM(p.raw_pass_outcome)), '') AS source_pass_outcome,
+             NULLIF(UPPER(TRIM(p.raw_shot_outcome)), '') AS source_shot_outcome
+         FROM parsed_coordinates AS p
+     ),
+    /* STEP 4 - BUILD THE BASE ODS EVENT ROWS
+       - Joins Starting XI details for jersey number and starter status.
+       - Maps raw event fields to type_name, sub_type_name, and outcome_name.
+       - Sets successful-pass outcome_name to NULL, as required by the brief.
+       - Derives pass_cross, play_pattern_name, zone_third, progressive and
+         final-third flags, xG, minute, second, and timestamp. */
+     base_events AS (
+         SELECT
+             c.source_frame,
+             FALSE AS is_derived_foul,
+             c.team_name,
+             c.player_name,
+             COALESCE(st.player_id, c.raw_player_id) AS player_id,
+             st.jersey_number,
+             (st.player_id IS NOT NULL) AS is_starter,
+             c.pass_recipient_name,
+             c.source_type,
+             COALESCE(
+                     c.source_pass_type,
+                     c.source_duel_type,
+                     c.source_shot_type
+             ) AS source_subtype,
+             CASE
+                 WHEN c.source_type = 'PASS'
+                     AND c.source_pass_type = 'INTERCEPTION'
+                     AND c.source_pass_outcome = 'INCOMPLETE' THEN 'Ball Lost'
+                 WHEN c.source_type = 'PASS' AND c.source_pass_type = 'INTERCEPTION' THEN 'Interception'
+                 WHEN c.source_type = 'PASS' THEN 'Pass'
+                 WHEN c.source_type = 'SHOT' THEN 'Shot'
+                 WHEN c.source_type = 'INTERCEPTION' THEN 'Interception'
+                 WHEN c.source_type = 'BALL RECOVERY' THEN 'Ball Recovery'
+                 WHEN c.source_type = 'BALL RECEIPT*' THEN 'Ball Receipt'
+                 WHEN (c.source_type = 'TACKLE'
+                     OR (c.source_type = 'DUEL' AND c.source_duel_type = 'TACKLE')) THEN 'Tackle'
+                 WHEN c.source_type = 'DRIBBLE' THEN 'Dribble'
+                 WHEN c.source_type IN ('BALL LOST', 'MISCONTROL') THEN 'Miscontrol'
+                 WHEN c.source_type = 'DISPOSSESSED' THEN 'Dispossessed'
+                 WHEN c.source_type = 'CLEARANCE' THEN 'Clearance'
+                 WHEN c.source_type = 'BALL OUT'
+                     AND COALESCE(c.source_pass_type, c.source_duel_type, c.source_shot_type) = 'CLEARANCE' THEN 'Clearance'
+                 WHEN c.source_type = 'BALL OUT' THEN 'Ball Out'
+                 WHEN c.source_type = 'FOUL COMMITTED' THEN 'Foul Committed'
+                 ELSE c.raw_type::VARCHAR(50)
+                 END AS type_name,
+             COALESCE(
+                     c.source_pass_type,
+                     c.source_duel_type,
+                     c.source_shot_type
+             )::VARCHAR(50) AS sub_type_name,
+             CASE
+                 -- NULL is the reporting convention for a successful pass.
+                 WHEN c.source_type = 'PASS' AND c.source_pass_outcome IS NULL THEN NULL
+                 WHEN c.source_type = 'PASS' THEN 'Incomplete'
+                 WHEN c.source_type = 'SHOT'
+                     AND c.source_shot_outcome = 'GOAL' THEN 'Goal'
+                 WHEN c.source_type = 'SHOT'
+                     AND c.source_shot_outcome IN ('ON TARGET', 'SAVED', 'SAVED TO POST', 'SAVED OFF TARGET') THEN 'Saved'
+                 WHEN c.source_type = 'SHOT' THEN 'Off Target'
+                 END::VARCHAR(50) AS outcome_name,
+             c.raw_pass_cross AS pass_cross,
+             COALESCE(
+                     c.raw_play_pattern,
+                     CASE
+                         WHEN c.source_pass_type IN ('CORNER', 'CORNER KICK') THEN 'From Corner'
+                         WHEN c.source_pass_type = 'FREE KICK' THEN 'From Free Kick'
+                         WHEN c.source_pass_type IN ('THROW IN', 'THROWIN') THEN 'From Throw In'
+                         WHEN c.source_pass_type = 'GOAL KICK' THEN 'From Goal Kick'
+                         WHEN c.source_pass_type = 'PENALTY' THEN 'From Penalty'
+                         ELSE 'Regular Play'
+                         END
+             )::VARCHAR(50) AS play_pattern_name,
+             REGEXP_REPLACE(c.raw_card_type, ' Card$', '')::VARCHAR(20) AS card_type,
+             c.x,
+             c.y,
+             c.end_x,
+             c.end_y,
+             CASE
+                 WHEN c.x < 40 THEN 'Defensive third'
+                 WHEN c.x < 80 THEN 'Middle third'
+                 WHEN c.x >= 80 THEN 'Attacking third'
+                 END::VARCHAR(20) AS zone_third,
+             COALESCE(
+                     c.source_type IN ('PASS', 'CARRY')
+                         AND c.end_x - c.x >= 10
+                         AND c.end_x > 60,
+                     FALSE
+             ) AS is_progressive,
+             COALESCE(c.x <= 80 AND c.end_x > 80, FALSE) AS is_final_third_entry,
+             c.xg,
+             c.period,
+             c.duration,
+             FLOOR(c.duration / 60)::INTEGER + 1 AS minute,
+             MOD(FLOOR(c.duration)::INTEGER, 60) AS second
+         FROM coordinates AS c
+                  LEFT JOIN get_match_starters(p_source_match_id) AS st
+                            ON st.team_name = c.team_name
+                                AND st.player_name = c.player_name
+     ),
+    /* STEP 5 - IDENTIFY THE TWO MATCH TEAMS
+       Used only by the fallback foul derivation to find the opposing team. */
+     match_teams AS (
+         SELECT DISTINCT team_name
+         FROM base_events
+         WHERE team_name IS NOT NULL
+     ),
+    /* STEP 6 - DERIVE FOULS ONLY WHEN THE SOURCE HAS NO NATIVE FOULS
+       The mapping PDF says a Set Piece / Free Kick means the other team
+       committed a foul. The supplied StatsBomb data already has native
+       Foul Committed rows, so this fallback stays inactive for this match and
+       prevents foul totals from being doubled. */
+     foul_events AS (
+         SELECT
+             b.source_frame,
+             TRUE AS is_derived_foul,
+             opponent.team_name,
+             NULL::VARCHAR(100) AS player_name,
+             NULL::VARCHAR(50) AS player_id,
+             NULL::INTEGER AS jersey_number,
+             FALSE AS is_starter,
+             NULL::VARCHAR(100) AS pass_recipient_name,
+             'SET PIECE'::VARCHAR AS source_type,
+             'FREE KICK'::VARCHAR AS source_subtype,
+             'Foul Committed'::VARCHAR(50) AS type_name,
+             'FREE KICK'::VARCHAR(50) AS sub_type_name,
+             NULL::VARCHAR(50) AS outcome_name,
+             FALSE AS pass_cross,
+             'From Free Kick'::VARCHAR(50) AS play_pattern_name,
+             b.card_type,
+             b.x,
+             b.y,
+             NULL::NUMERIC(5,1) AS end_x,
+             NULL::NUMERIC(5,1) AS end_y,
+             b.zone_third,
+             FALSE AS is_progressive,
+             FALSE AS is_final_third_entry,
+             NULL::NUMERIC(5,4) AS xg,
+             b.period,
+             b.duration,
+             b.minute,
+             b.second
+         FROM base_events AS b
+                  INNER JOIN match_teams AS opponent
+                             ON opponent.team_name <> b.team_name
+         -- The mapping PDF describes this fallback as Set Piece + Free Kick.
+         -- The supplied StatsBomb feed represents it as Pass + pass_type Free
+         -- Kick.  Its native Foul Committed events are preferred when present
+         -- so a match never double-counts fouls.
+         WHERE (
+             (b.source_type = 'SET PIECE' AND b.source_subtype = 'FREE KICK')
+                 OR (b.source_type = 'PASS' AND b.source_subtype = 'FREE KICK')
+             )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM base_events AS native_foul
+             WHERE native_foul.source_type = 'FOUL COMMITTED'
+         )
+     ),
+    /* STEP 7 - COMBINE SOURCE AND FALLBACK-DERIVED EVENTS */
+     all_events AS (
+         SELECT * FROM base_events
+         UNION ALL
+         SELECT * FROM foul_events
+     ),
+    /* STEP 8 - ASSIGN THE FINAL SEQUENTIAL EVENT ID
+       IDs are assigned only after all derived events exist and are sorted by
+       duration, as required by the column mapping. */
+     ordered_events AS (
+         SELECT
+                     ROW_NUMBER() OVER (
+                 ORDER BY duration, source_frame, is_derived_foul DESC, team_name
+                 )::INTEGER AS id,
+                     *
+         FROM all_events
+     )
+SELECT
+    id,
+    p_match_id,
+    p_competition_id,
+    p_season_id,
+    team_name,
+    player_name,
+    player_id,
+    jersey_number,
+    pass_recipient_name,
+    type_name,
+    sub_type_name,
+    outcome_name,
+    pass_cross,
+    play_pattern_name,
+    card_type,
+    x,
+    y,
+    end_x,
+    end_y,
+    zone_third,
+    is_progressive,
+    is_final_third_entry,
+    xg,
+    period,
+    source_frame,
+    duration,
+    minute,
+    second,
+    LPAD(minute::TEXT, 2, '0') || ':' || LPAD(second::TEXT, 2, '0')
+FROM ordered_events;
+$$;

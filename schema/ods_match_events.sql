@@ -54,3 +54,9 @@ CREATE TABLE IF NOT EXISTS ods_match_events
             )
 
 );
+
+CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_team_player_id
+    ON ods_match_events (match_id, team_name, player_id);
+
+CREATE INDEX IF NOT EXISTS ix_ods_match_events_match_type
+    ON ods_match_events (match_id, type_name);

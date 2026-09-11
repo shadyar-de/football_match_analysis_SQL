@@ -1,179 +1,186 @@
 # Football Match Events Analytics Pipeline
 
-This project is part of the training Kanidata provides for its Graduate Data
-Engineering Programme, delivered as a real client engagement. 
+This project is part of the training Kanidata provides for its Graduate Data Engineering Programme, delivered as a real client engagement.
 
-**DE-02 Team Alpha** (Zahraa Zaher, Shadyar Radha, Arya Burhan).
+**DE-02 Team Alpha** (Zahraa Zaher, Shadyar Radha, Arya Burhan)
 
-A football analytics company tracks every event in every match it covers
-(passes, shots, dribbles, recoveries, fouls, ...). Today, each analyst
-wrangles ~2,600 raw, unnormalised StatsBomb rows by hand before they can build
-a single match report. This project replaces that manual step with a
-re-runnable pipeline: one clean, typed source-of-truth table
-(`ods_match_events`) and a reporting layer of views on top of it that feed the
-client's eighteen match-report visuals -- filterable by match, team, and
-player, with no SQL rewriting required.
+---
 
-## Pipeline at a Glance
+## Overview
+
+A football analytics company tracks every event across its matches (passes, shots, dribbles, recoveries, fouls, etc.). Historically, analysts manually wrangled ~2,600 raw, unnormalised StatsBomb rows per match before producing a single report.
+
+This project replaces manual wrangling with a **fully automated, idempotent, and re-runnable SQL pipeline**. It extracts and parses raw JSON dumps into a clean, typed source-of-truth table (`ods_match_events`) and provisions a 18-visual reporting view layer that enables analysts to filter by match, team, and player without rewriting SQL.
+
+---
+
+## Project Structure
 
 ```text
-statsbomb_raw_events (raw StatsBomb event dump, one match's worth of rows)
+football_match_analysis_SQL/
+├── functions/
+│   ├── get_match_starters.sql
+│   ├── load_match_events.sql
+│   └── transform_match_events.sql
+├── procedures/
+│   ├── sp_run_pipeline.sql
+│   └── sp_seed_match_metadata.sql
+├── schema/
+│   ├── match_metadata.sql
+│   └── ods_match_events.sql
+├── seed/
+│   └── seed_match_3825848.sql
+├── validation/
+│   └── post_load_checks.sql
+├── views/
+│   └── visuals.sql
+├── .gitignore
+├── README.md
+└── run_all.sql               -- Master pipeline execution script
+
+Pipeline Architecture
+
+statsbomb_raw_events (Raw StatsBomb payload dump)
+        │
+        ├─── get_match_starters()  ──► Extracts lineup from "Starting XI" tactics JSON
+        │                              (Resolves player_id, jersey_number, team)
+        ▼
+transform_match_events()           ──► Cleans coordinates (x, y, end_x, end_y),
+        │                              standardises event taxonomy, parses time,
+        │                              filters out non-spatial metadata rows
+        ▼
+sp_run_pipeline(p_source_match_id) ──► IDEMPOTENT LOADER:
+        │                              1. Verifies match exists in match_metadata
+        │                              2. Purges existing match records (DELETE WHERE match_id)
+        │                              3. Loads transformed data into ods_match_events
+        ▼
+ods_match_events                   ──► Single source of truth (indexed on match, team, player, type)
+        │
+        ├──► post_load_checks.sql  ──► Audits row counts, unmapped types, and pitch coordinate bounds
         │
         ▼
-match_metadata            -- seeds match_id / competition_id / season_id
-        │                      (these are not present on the raw event rows)
-        ▼
-load_ods_match_events(id)  -- transformation function: parses coordinates,
-        │                      standardises event types/outcomes, resolves
-        │                      player_id & jersey_number from Starting XI,
-        │                      derives zone/progressive/final-third flags,
-        │                      derives fallback fouls, assigns sequential id
-        ▼
-ods_match_events           -- single source of truth, one row per event,
-        │                      indexed on (match_id, team_name, player_id)
-        │                      and (match_id, type_name)
-        ▼
-Reporting layer (views, sql/ods/visuals.sql)
-        │
-        ▼
-18 analyst-facing report_* visuals -- filter by match_id / team_name /
-                                     player_id, no SQL changes needed
-```
+Reporting Layer (views/*.sql)       ──► 18 client match-report views (filterable via WHERE)
 
-## Running the Pipeline
+Running the Pipeline
 
-Run in this order (each script is idempotent and safe to re-run):
+Full Execution via run_all.sql
 
-1. `sql/ods/create_table.sql` -- creates `ods_match_events` if it doesn't exist.
-2. `sql/ods/match_metadata.sql` -- creates `match_metadata` and seeds the
-   sample match (`source_match_id = 3825848`). **A match must have a row here
-   before it can be loaded.**
-3. `sql/ods/load_and_transform.sql` -- creates the indexes, the
-   `get_match_starters()` helper, and the `load_ods_match_events()`
-   transformation function, then calls it for the seeded match and runs the
-   post-load validation checks.
-4. `sql/ods/visuals.sql` -- creates the reporting layer (all `report_*` views).
+Run the master script in DataGrip or psql:
 
-### Loading a new match
+-- 1. Seed match metadata
+\i seed/seed_match_3825848.sql
 
-1. Add a row to `match_metadata` for the new `source_match_id` (see the
-   `INSERT ... ON CONFLICT DO NOTHING` pattern in `match_metadata.sql`).
-2. Run `SELECT load_ods_match_events(<source_match_id>);`
+-- 2. Execute the transformation and ingestion orchestrator
+CALL sp_run_pipeline(p_source_match_id => 3825848);
 
-No other script changes. The function deletes and reloads only that match's
-rows in `ods_match_events`, so it never touches other matches and is safe to
-re-run if the source data needed a fix.
+-- 3. Run automated post-load integrity checks
+\i validation/post_load_checks.sql
 
-## The Data Model: `ods_match_events`
+Loading a New Match
 
-One row per event, grain = one spatial event from the raw feed, plus one
-derived `Foul Committed` row per opponent's `SET PIECE`/`FREE KICK` event
-*only* when the feed has no native foul events (see "Known data caveats"
-below). Primary key: `(match_id, id)`.
+Because the pipeline is built around scoped entity idempotency, adding another
+match or re-processing an existing one is identical:
 
-Key transformations (full column-by-column mapping is in the project's
-`ODS_Column_Mapping` reference):
+1.  Register the new match in match_metadata:
+    INSERT INTO match_metadata (source_match_id, competition_id, season_id)
+    VALUES (3825849, 43, 106)
+    ON CONFLICT (source_match_id) DO NOTHING;
+2.  Ingest the match's raw JSON dump into statsbomb_raw_events.
+3.  Call the pipeline orchestrator:
+    CALL sp_run_pipeline(3825849);
 
-- **Coordinates** -- `location` / `*_end_location` string fields like
-  `"[61.0, 40.1]"` are parsed into numeric `x`/`y` and `end_x`/`end_y`, scaled
-  to StatsBomb's 0-120 / 0-80 pitch. A future 0-1-range feed is already
-  supported via a conditional scale-up.
-- **Event taxonomy** -- `type_name` / `sub_type_name` / `outcome_name` are
-  derived from the source `type` + subtype columns (`pass_type`,
-  `shot_type`, `duel_type`, ...) into one consistent StatsBomb-style label
-  per event. Inconsistent string values (e.g., `Ball Receipt*`) are mapped
-  to standard values (`Ball Receipt`). `outcome_name IS NULL` on a `Pass` is
-  the convention used throughout the reporting layer for "successful pass" --
-  no separate flag.
-- **Player identity** -- `player_id` and `jersey_number` are resolved by
-  joining the match's `Starting XI` tactics payload (parsed in
-  `get_match_starters()`) onto events.
-- **Derived football flags** -- `zone_third`, `is_progressive` (advanced ≥10
-  yards and ended past the halfway line), and `is_final_third_entry`
-  (started at/behind x=80, ended beyond it) are computed once here so every
-  downstream view reads a flag instead of re-deriving it. Logic is centralized
-  to avoid duplication.
-- **Timing** -- StatsBomb timestamps reset every period; `duration` is
-  normalised to total match seconds, then `minute`/`second`/`timestamp` are
-  derived from that.
+If source data is patched upstream, simply run CALL sp_run_pipeline(<match_id>);
+again. It will automatically wipe and cleanly reload only that match's rows in
+ods_match_events without affecting any other matches.
 
-## Ingestion Approach
+Key Transformations & Engineering Edge Cases
 
-- **`match_id`, `competition_id`, `season_id`** are not present on the raw
-  event rows. They live in `match_metadata`, keyed by the raw StatsBomb
-  `source_match_id`, and are looked up inside `load_ods_match_events()` at
-  load time. A match must be seeded in `match_metadata` before it can be
-  loaded -- this is enforced in code (the function raises an exception if the
-  match isn't registered), since a DB-level foreign key isn't possible here
-  (`match_id` isn't unique in the raw event table).
-- **`player_id` / `jersey_number`** come from the `Starting XI` event's
-  `tactics` JSON payload, which StatsBomb includes per match. This is
-  extracted once per match by `get_match_starters()` into a lookup table of
-  `(team_name, player_name) -> (player_id, jersey_number)`, which is then
-  left-joined onto every event by player name.
+1. Spatial Grain vs. Metadata Events
 
-### Data Quality & Validation
-- **Error Handling:** The load function catches and handles malformed or missing JSON in the `Starting XI` tactics payload without crashing the pipeline.
-- **Validation:** Post-load validation checks evaluate the dataset. Warnings are raised for unmapped event types, ensuring new or unexpected raw data is flagged rather than silently passing to the reporting layer.
+The target ods_match_events table enforces a strictly spatial grain (one pitch
+event with coordinates):
 
-## The Reporting Layer
+  - Events kept: Pass, Shot, Dribble, Ball Receipt, Duel, Clearance, Foul
+    Committed, etc.
+  - Events filtered: Non-spatial match metadata rows lacking coordinates
+    (Starting XI, Half Start, Half End, Substitution, Tactical Shift, Injury
+    Stoppage, Player On, Player Off) are deliberately excluded from
+    ods_match_events.
+  - Starting XI JSON tactics arrays are parsed separately in
+    get_match_starters() to build the player-jersey lookup map before raw event
+    transformation.
 
-`sql/ods/visuals.sql` defines three internal reusable views
-(`int_successful_passes`, `int_pitch_geography`, `int_defensive_actions`) that
-centralise logic several visuals share, plus sixteen `report_*` views that
-cover all eighteen visuals (Progressive Passes and Final Third Entries share
-one view, `report_advancing_passes`, since they read the same rows and differ
-only by which boolean flag is set; Passes per Minute reuses the per-minute
-totals already computed by the Pass Accuracy view instead of re-scanning the
-table).
+2. PostgreSQL Keyword Disambiguation
 
-| # | Visual | View |
-|---|---|---|
-| 1 | Title Page | `report_title_page` |
-| 2 | Average Locations | `report_average_locations` |
-| 3 | Shot Map | `report_shot_map` |
-| 4 | Pass Network | `report_pass_network` |
-| 5 | Losses of Possession | `report_possession_losses` |
-| 6 | Ball Recoveries | `report_ball_recoveries` |
-| 7 | Dribbles | `report_dribbles` |
-| 8 | Crosses | `report_crosses` |
-| 9 | Fouls Committed | `report_fouls_committed` |
-| 10 | Defensive Actions | `report_defensive_actions` |
-| 11 | Progressive Passes | `report_advancing_passes` (`WHERE is_progressive`) |
-| 12 | Corner Kicks | `report_corner_kicks` |
-| 13 | Possession Zones | `report_possession_zones` |
-| 14 | Final Third Entries | `report_advancing_passes` (`WHERE is_final_third_entry`) |
-| 15 | Territory Chart | `report_territory_chart` |
-| 16 | Passes per Minute | `report_passes_per_minute` |
-| 17 | Pass Accuracy | `report_pass_accuracy_timeline` |
-| 18 | Match Statistics | `report_match_statistics` |
+In PostgreSQL function signatures (RETURNS TABLE), timestamp is a reserved data
+type keyword. In transform_match_events(), the column is declared with double
+quotes ("timestamp" VARCHAR(10)) to ensure the engine treats it as a column
+identifier rather than an unnamed data type.
 
-### Why views (and not materialised views) right now
+3. Coordinates & Scalability
 
-Because the table has indexes on `(match_id, team_name, player_id)` and `(match_id, type_name)`, and every reporting view filters on `match_id`, each query only scans a few thousand indexed rows for that match — not the whole table. That's already fast, so a live view gives you up-to-date results at essentially no extra cost. A materialized view would only pay off once queries got expensive enough to need pre-computed results, and right now it would just add a refresh step and risk serving stale data while the underlying transformation logic is still being refined.
+  - Coordinates in raw text (location = "[61.0, 40.1]") are parsed into x, y,
+    end_x, and end_y as NUMERIC(5, 1).
+  - Pitch coordinates adhere to StatsBomb's 120×80 yard dimension standard.
 
+4. Derived Football Metrics
 
-## Filterability
+Flags are centralized in the ODS layer to avoid expensive runtime recalculations
+across views:
 
-Every `report_*` view can be filtered by `match_id`, `team_name`, and
-`player_id` (where the visual has a player grain) with a plain `WHERE` --
-no view edits, no rewritten SQL:
+  - is_progressive: True when a pass advances \ge 10 yards toward the opponent's
+    goal and ends past the halfway line.
+  - is_final_third_entry: True when an event originates at or behind x=80 and
+    concludes beyond x>80.
+  - zone_third: Categorised into 'Defensive Third', 'Middle Third', or 'Final
+    Third'.
 
-```sql
--- One match, all shots
-SELECT * FROM report_shot_map WHERE match_id = '3825848';
+Data Quality & Validation
 
--- One match, one team, all shots
-SELECT * FROM report_shot_map WHERE match_id = '3825848' AND team_name = 'Levante UD';
+validation/post_load_checks.sql runs immediately after pipeline execution:
 
--- One match, one player
-SELECT * FROM report_average_locations
-WHERE match_id = '3825848' AND player_id = '6739';
+1.  Coordinate Sanity: Verifies all records stay within pitch bounds
+    (0 \le x \le 120, 0 \le y \le 80).
+2.  Taxonomy Audits: Validates raw event types against the taxonomy mapping.
+    Non-spatial metadata events are filtered out of the check so warnings only
+    fire if an actual, unhandled in-game event type is detected.
+3.  Player Identity Completeness: Verifies that starters mapped correctly to
+    jersey_number and player_id.
 
--- One match, whole pass network
-SELECT * FROM report_pass_network WHERE match_id = '3825848';
-```
+Reporting Layer (Views)
 
-## Next Steps
+All eighteen analyst match-report visuals run off live, indexed views
+(ods/visuals.sql):
 
-- Load a second match end-to-end to confirm the pipeline runs unmodified.
+| \# | Report Visual       | View Name                       | Shared Logic / Notes                     |
+| -- | ------------------- | ------------------------------- | ---------------------------------------- |
+| 1  | Title Page          | `report_title_page`             | High-level match summary                 |
+| 2  | Average Locations   | `report_average_locations`      | Player average $(x, y)$ positions        |
+| 3  | Shot Map            | `report_shot_map`               | Coordinates, xG, and shot outcome        |
+| 4  | Pass Network        | `report_pass_network`           | Passer-receiver link volume              |
+| 5  | Possession Losses   | `report_possession_losses`      | Dispossessions, miscontrols, lost balls  |
+| 6  | Ball Recoveries     | `report_ball_recoveries`        | Defensive recoveries                     |
+| 7  | Dribbles            | `report_dribbles`               | Dribble attempts and success rate        |
+| 8  | Crosses             | `report_crosses`                | Cross completions by wing                |
+| 9  | Fouls Committed     | `report_fouls_committed`        | Native + derived set-piece fouls         |
+| 10 | Defensive Actions   | `report_defensive_actions`      | Built on `int_defensive_actions`         |
+| 11 | Progressive Passes  | `report_advancing_passes`       | Filtered on `WHERE is_progressive`       |
+| 12 | Corner Kicks        | `report_corner_kicks`           | Corner set pieces and deliveries         |
+| 13 | Possession Zones    | `report_possession_zones`       | Pitch thirds possession percentage       |
+| 14 | Final Third Entries | `report_advancing_passes`       | Filtered on `WHERE is_final_third_entry` |
+| 15 | Territory Chart     | `report_territory_chart`        | Territorial dominance breakdown          |
+| 16 | Passes per Minute   | `report_passes_per_minute`      | Tempo timeline                           |
+| 17 | Pass Accuracy       | `report_pass_accuracy_timeline` | Success rate across intervals            |
+| 18 | Match Statistics    | `report_match_statistics`       | High-level team comparisons              |
+
+Querying Views
+
+Every view is indexed on match_id, team_name, and player_id:
+
+-- Query Shot Map for one match
+SELECT * FROM report_shot_map 
+WHERE match_id = '3825848';
+
+-- Query Average Locations for a specific team
+SELECT * FROM report_average_locations 
+WHERE match_id = '3825848' AND team_name = 'Levante UD';

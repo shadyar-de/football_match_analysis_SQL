@@ -29,14 +29,12 @@ CREATE TABLE IF NOT EXISTS match_metadata
 ----------------------------------------------------------------------------- */
 INSERT INTO
     match_metadata
-    (
-     source_match_id,
-     match_id,
-     competition_id,
-     season_id
-    )
+(
+    source_match_id,
+    match_id,
+    competition_id,
+    season_id
+)
 VALUES (3825848, '3825848', 'LA_LIGA', '2015_2016')
 ON CONFLICT (source_match_id) DO NOTHING;
 
-
-SELECT * FROM match_metadata;
