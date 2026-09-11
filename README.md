@@ -36,10 +36,12 @@ football_match_analysis_SQL/
 │   └── visuals.sql
 ├── .gitignore
 ├── README.md
-└── run_all.sql               -- Master pipeline execution script
+└── run_all.sql              
+```
 
-Pipeline Architecture
+### Pipeline Architecture
 
+```text
 statsbomb_raw_events (Raw StatsBomb payload dump)
         │
         ├─── get_match_starters()  ──► Extracts lineup from "Starting XI" tactics JSON
@@ -60,6 +62,7 @@ ods_match_events                   ──► Single source of truth (indexed on 
         │
         ▼
 Reporting Layer (views/*.sql)       ──► 18 client match-report views (filterable via WHERE)
+```
 
 Running the Pipeline
 
